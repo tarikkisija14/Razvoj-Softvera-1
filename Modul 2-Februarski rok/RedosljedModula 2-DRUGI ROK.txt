@@ -1,0 +1,428 @@
+"Server=localhost;Database=_broj_indeksa;Trusted_Connection=True;MultipleActiveResultSets=true;TrustServerCertificate=True"
+
+
+1.Kreiranje UplataLinija
+
+
+namespace Market.Domain.Entities.Sales
+{
+    public class UplataLinijaEntity:BaseEntity
+    {
+        public int UplataId {  get; set; }
+        public UplataEntity? Uplata { get; set; }
+        public int ProductId {  get; set; }
+        public ProductEntity? Product { get; set; }
+
+        public int Kolicina {  get; set; }
+        public NacinPlacanjaType NacinPlacanja {  get; set; }
+        public decimal Iznos {  get; set; }
+
+    }
+}
+
+2.Editovanje Uplata i dodavanje ICollection(UplataEntity.cs)
+ public ICollection<UplataLinijaEntity> Linije { get; set; } = new List<UplataLinijaEntity>();
+
+
+
+3.EF Konfiguracija
+Kreirati UplataLinijaConfiguration.cs u:
+Market.Infrastructure/Database/Configurations/Sales/
+
+public class UplataLinijaConfiguration : IEntityTypeConfiguration<UplataLinijaEntity>
+{
+    public void Configure(EntityTypeBuilder<UplataLinijaEntity> builder)
+    {
+        builder.ToTable("UplataLinije");
+
+        builder
+            .HasOne(x => x.Uplata)
+            .WithMany(x => x.Linije)
+            .HasForeignKey(x => x.UplataId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder
+            .HasOne(x => x.Product)
+            .WithMany()
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+u db context dodat
+ public DbSet<UplataLinijaEntity> UplataLinije => Set<UplataLinijaEntity>();
+
+
+
+4.U IAppDbContext
+DbSet<UplataLinijaEntity> UplataLinije { get; }
+
+MIGRACIJE!!!!!!!!!!
+
+
+5.Dto za dodavanje linija u uplatu, dodavanje i handler
+
+namespace Market.Application.Modules.Sales.Uplate.Commands
+{
+    public class CreateUplataLinijaDto
+    {
+        public int ProductId {  get; set; }
+        public int Kolicina {  get; set; }
+        public NacinPlacanjaType NacinPlacanja {  get; set; }
+    }
+}
+
+ public class CreateUplataCommand:IRequest<int>
+ {
+     public string BrojUplate {  get; set; }
+     public int OrderId {  get; set; }
+     public string? Napomena {  get; set; }
+     public List<CreateUplataLinijaDto> Linije {  get; set; }=new();
+ }
+
+  public class CreateUplataHandler(IAppDbContext db):IRequestHandler<CreateUplataCommand,int>
+ {
+     public async Task<int> Handle(CreateUplataCommand command, CancellationToken ct)
+     {
+         var order = await db.Orders
+             .Include(x => x.Items)
+             .ThenInclude(x => x.Product)
+             .FirstOrDefaultAsync(x => x.Id == command.OrderId, ct);
+
+         if (order == null)
+             throw new MarketNotFoundException($"Narudzba sa ID={command.OrderId} nije pronadjena.");
+
+         // Merge linija:
+         // Ako dvije linije imaju isti ProductId I isti NacinPlacanja -> saberi kolicinu u jednu liniju
+         // Ako isti ProductId ali razlicit NacinPlacanja -> ostaju kao posebne linije
+         var mergedLinije = new List<CreateUplataLinijaDto>();
+
+         foreach (var linija in command.Linije)
+         {
+             var postojeca = mergedLinije.FirstOrDefault(x =>
+                 x.ProductId == linija.ProductId &&
+                 x.NacinPlacanja == linija.NacinPlacanja);
+
+             if (postojeca != null)
+             {
+                 postojeca.Kolicina += linija.Kolicina;
+             }
+             else
+             {
+                 mergedLinije.Add(new CreateUplataLinijaDto
+                 {
+                     ProductId = linija.ProductId,
+                     NacinPlacanja = linija.NacinPlacanja,
+                     Kolicina = linija.Kolicina
+                 });
+             }
+         }
+
+         decimal ukupanIznos = 0;
+         var linijeEntities = new List<UplataLinijaEntity>();
+
+         foreach (var linija in mergedLinije)
+         {
+             var orderItem = order.Items.FirstOrDefault(x => x.ProductId == linija.ProductId);
+             if (orderItem == null)
+                 throw new BuisnesMarketRuleException($"Proizvod sa ID={linija.ProductId} ne postoji u navedenoj narudzbi.");
+
+             var iznos = orderItem.Product!.Price * linija.Kolicina;
+             ukupanIznos += iznos;
+
+             linijeEntities.Add(new UplataLinijaEntity
+             {
+                 ProductId = linija.ProductId,
+                 Kolicina = linija.Kolicina,
+                 NacinPlacanja = linija.NacinPlacanja,
+                 Iznos = iznos
+             });
+         }
+
+         var uplata = new UplataEntity
+         {
+             BrojUplate = command.BrojUplate,
+             OrderId = command.OrderId,
+             Napomena = command.Napomena,
+             UkupanIznos = ukupanIznos,
+             Linije = linijeEntities
+         };
+         db.Uplate.Add(uplata);
+
+         order.TotalAmountPaid += ukupanIznos;
+         order.BalanceDue = order.TotalAmount - order.TotalAmountPaid;
+
+         if (order.BalanceDue <= 0)
+         {
+             order.BalanceDue = 0;
+             order.Status = OrderStatusType.Paid;
+         }
+         else
+         {
+             order.Status = OrderStatusType.PartiallyPaid;
+         }
+
+         await db.SaveChangesAsync(ct);
+         return uplata.Id;
+     }
+ }
+
+ public class CreateUplataValidator:AbstractValidator<CreateUplataCommand>
+ {
+     public CreateUplataValidator() {
+         RuleFor(x => x.BrojUplate).NotEmpty().MaximumLength(20).WithMessage("valida");
+         RuleFor(x => x.OrderId).GreaterThan(0).WithMessage("valida");
+
+         RuleFor(x => x.Linije).NotEmpty().WithMessage("bar 1 linija");
+
+         RuleForEach(x => x.Linije).ChildRules(s =>
+         {
+             s.RuleFor(x => x.ProductId).GreaterThan(0).WithMessage("id");
+             s.RuleFor(x => x.Kolicina).GreaterThan(0).WithMessage("kolicina veca 0");
+             s.RuleFor(x => x.NacinPlacanja).IsInEnum().WithMessage("nacin placanja");
+         });
+     }
+ }
+
+
+6.Controller
+ [HttpPost]
+    public async Task<IActionResult> Create([FromBody] CreateUplataCommand command, CancellationToken ct)
+    {
+        var uplataId = await sender.Send(command, ct);
+        return Ok(new { id = uplataId, message = "Uplata uspjesno kreirana." });
+    }
+
+
+7.dodamo u modele
+
+ export class ListUplateRequest extends BasePagedQuery{
+  constructor() {
+    super();
+  }
+}
+
+
+ export interface CreateUplataLinijaDto {
+  productId: number;
+  kolicina: number;
+  nacinPlacanja: NacinPlacanjaType;
+}
+
+export interface CreateUplataCommand{
+  brojUplate: string;
+  orderId: number;
+  napomena?: string;
+  linije:CreateUplataLinijaDto[]
+}
+export interface CreateUplataResponse {
+  id: number;
+  message: string;
+}
+
+
+8.dodajemo u api servis create i mjenjamo list
+
+list(request:ListUplateRequest): Observable<ListUplateResponse> {
+   const params=buildHttpParams(request);
+
+    return this.http.get<ListUplateResponse>(this.baseUrl, { params });
+  }
+
+  create(command:CreateUplataCommand):Observable<CreateUplataResponse>{
+    return this.http.post<CreateUplataResponse>(this.baseUrl, command);
+  }
+
+
+9.paginator u html
+ <app-fit-paginator-bar [vm]="this"></app-fit-paginator-bar>
+
+RADIMO NA UPLATE.TS
+
+10.Dodamo nasljedjivanje u UplateComponent
+ export class UplateComponent
+  extends BaseListPagedComponent<ListUplateQueryDto, ListUplateRequest>
+  implements OnInit
+
+11.Dodamo constructor
+   constructor() {
+    super();
+    this.request = new ListUplateRequest();
+  }
+
+12.init list mjesto hardkodiranog loadUplate
+  ngOnInit(): void {
+    this.initList();
+  }
+
+13.Dodamo loadPagedData
+  loadPagedData(): void {
+    this.startLoading();
+
+    this.uplateApiService.list(this.request).subscribe({
+      next: params => {
+        this.handlePageResult(params);
+        this.stopLoading();
+      },
+      error: err => {
+        this.stopLoading();
+        console.error(err);
+      }
+    })
+  }
+
+14.Mjenjamo uplate u items u htmlu i obrisi niz uplate iz tsa
+    <div class="table-card">
+    <table mat-table [dataSource]="items">
+      <!-- Broj uplate -->
+      <ng-container matColumnDef="brojUplate">
+        <th mat-header-cell *matHeaderCellDef>BROJ UPLATE</th>
+        <td mat-cell *matCellDef="let uplata">
+          <span class="broj-uplate">{{ uplata.brojUplate }}</span>
+        </td>
+      </ng-container>
+
+SADA PRELAZ NA ADD KOMPONENTU(GLAVNI DIO ZADATKA)
+
+Dodajemo api servise
+private uApi=inject(UplateApiService);
+private oApi=inject(OrdersApiService);
+private ts=inject(ToasterService);
+
+
+promjeniti narudzbe da ne budu hardkodirane
+ narudzbe: ListOrdersWithItemsQueryDto[]=[]
+
+Dodamo nacinPlacanjaOpcije niz
+  nacinPlacanjaOpcije: NacinPlacanja[] = [
+    { id: NacinPlacanjaType.Kes, name: 'Kes' },
+    { id: NacinPlacanjaType.Kartica, name: 'Kartica' }
+  ];
+
+Izmjenimo konstruktor dodamo validatore i sklonimo add item
+ constructor() {
+    this.form = this.fb.group({
+      brojUplate: ['',[Validators.required,Validators.maxLength(20)]],
+      orderId: ['',[Validators.required]],
+      napomena: ['',[Validators.maxLength(500)]],
+      items: this.fb.array([],[Validators.required])
+    });
+  }
+
+
+Moramo dinamicki ucitati narudzbe
+  ngOnInit() {
+    this.loadNarudzbe();
+  }
+
+loadNarudzbe() {
+    this.isLoading=true;
+    this.oApi.listWithItems().subscribe({
+      next: data => {
+        this.narudzbe=data.items;
+        this.isLoading=false;
+        this.addItem();
+        this.addItem();
+      },
+      error: err => {
+        console.log(err);
+        this.ts.error("greska pri ucitavanju narudzbi");
+      }
+    })
+  }
+
+Editujemo additem da ima validatore
+ addItem(): void {
+    const itemGroup = this.fb.group({
+      productId: ['',[Validators.required]],
+      kolicina: [1,[Validators.required,Validators.min(1)]],
+      nacinPlacanja: ['',[Validators.required]],
+    });
+    this.items.push(itemGroup);
+  }
+
+editujemo remove item da ne brise ako nema stavki
+ removeItem(index: number): void {
+   if(this.items.length > 0){
+     this.items.removeAt(index);
+   }
+  }
+
+Popuniti formControlName u HTML (uplata-add.component.html):
+- Polje "Broj uplate":          formControlName="brojUplate"
+<input matInput type="text"  required />
+<input matInput type="text" formControlName="brojUplate" required />
+
+
+- Select "Narudzba":            formControlName="orderId"
+<mat-select  required (selectionChange)="onOrderChange($event.value)">
+<mat-select formControlName="orderId" required (selectionChange)="onOrderChange($event.value)">
+
+- Textarea "Napomena":          formControlName="napomena"
+<textarea matInput rows="3" placeholder="Unesite napomenu..."></textarea>
+<textarea matInput rows="3" formControlName="napomena" placeholder="Unesite napomenu..."></textarea>
+
+
+- Select "Proizvod" (u items):  formControlName="productId"
+<mat-select required>
+  <mat-option *ngFor="let item of selectedOrderItems" [value]="item.product.id">
+<mat-select formControlName="productId" required>
+
+- Input "Kolicina" (u items):   formControlName="kolicina"
+<input matInput type="number" min="1" required />
+<input matInput type="number" formControlName="kolicina" min="1" required />
+
+- Select "Nacin placanja":      formControlName="nacinPlacanja"
+<mat-select required> </mat-select>
+<mat-select formControlName="nacinPlacanja" required>
+  <mat-option *ngFor="let np of nacinPlacanjaOpcije" [value]="np.id">
+    {{ np.name }}
+  </mat-option>
+</mat-select>
+
+
+
+
+Implementacija onSubmit(GLAVNI DIO ISPITA!!!!!)
+onSubmit(): void {
+    if(this.form.invalid){
+      this.ts.error("popunite sva polja");
+      return;
+    }
+
+    if(this.items.length === 0){
+      this.ts.error("uplata mora imati 1 liniju");
+      return;
+    }
+    this.isSaving = true;
+
+    const command:CreateUplataCommand={
+      brojUplate:this.form.value.brojUplate,
+      orderId:this.form.value.orderId,
+      napomena:this.form.value.napomena,
+      linije:this.items.controls.map(i=>({
+        productId:i.value.productId,
+        kolicina:i.value.kolicina,
+        nacinPlacanja:i.value.nacinPlacanja,
+
+      }as CreateUplataLinijaDto
+      ))
+    };
+
+    this.uApi.create(command).subscribe({
+      next: data => {
+        this.ts.success(("uplata uspjesno kreirana"));
+        this.router.navigate(['/admin/uplate']);
+      },
+      error: err => {
+        this.ts.error("ERRROR");
+        this.ts.error(err.message);
+        this.isSaving = false;
+		if(err.status==409){
+		   this.ts.error("kreiranje uplate odbijeno");
+		}
+
+      }
+    })
+
+  }
