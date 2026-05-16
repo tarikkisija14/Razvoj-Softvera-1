@@ -426,3 +426,10 @@ onSubmit(): void {
     })
 
   }
+
+
+
+Mjenjamo
+<mat-option *ngFor="let item of selectedOrderItems" [value]="$any(item.product).productId">
+  {{ $any(item.product).productName }}
+</mat-option>
