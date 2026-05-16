@@ -31,6 +31,7 @@ public class FakturaEntity : BaseEntity
     /// Single source of truth for technical/business constraints.
     /// Used in validators and EF configuration.
     /// </summary>
+    public ICollection<FakturaStavkaEntity> Stavke { get; set; } = new List<FakturaStavkaEntity>();
     public static class Constraints
     {
         public const int BrojRacunaMaxLength = 20;

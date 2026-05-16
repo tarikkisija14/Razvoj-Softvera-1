@@ -1,7 +1,8 @@
 import { Component, inject, OnInit } from '@angular/core';
 import { Router } from '@angular/router';
 import { FaktureApiService } from '../../../../api-services/fakture/fakture-api.service';
-import { ListFaktureQueryDto, FakturaTip } from '../../../../api-services/fakture/fakture-api.models';
+import {ListFaktureQueryDto, FakturaTip, ListFaktureRequest} from '../../../../api-services/fakture/fakture-api.models';
+import {BaseListPagedComponent} from '../../../../core/components/base-classes/base-list-paged-component';
 
 @Component({
   selector: 'app-fakture',
@@ -9,28 +10,36 @@ import { ListFaktureQueryDto, FakturaTip } from '../../../../api-services/faktur
   templateUrl: './fakture.component.html',
   styleUrl: './fakture.component.scss'
 })
-export class FaktureComponent implements OnInit {
+export class FaktureComponent extends BaseListPagedComponent<ListFaktureQueryDto, ListFaktureRequest> implements OnInit {
   private router = inject(Router);
   private faktureApiService = inject(FaktureApiService);
 
   fakture: ListFaktureQueryDto[] = [];
   displayedColumns: string[] = ['brojRacuna', 'tip', 'datumKreiranja', 'brojStavki'];
 
-  ngOnInit(): void {
-    this.loadFakture();
+  constructor() {
+    super();
+    this.request = new ListFaktureRequest();
   }
 
-  loadFakture(): void {
-    // Hardkodirano paging: stranica 1, veličina 10
-    this.faktureApiService.list(1, 10).subscribe({
-      next: (response) => {
-        this.fakture = response.items;
-      },
-      error: (err) => {
-        console.error('Greška pri učitavanju faktura:', err);
-      }
-    });
+  ngOnInit(): void {
+    this.initList();
   }
+
+  protected override loadPagedData() {
+    this.startLoading();
+    this.faktureApiService.list(this.request).subscribe({
+      next: data => {
+        this.handlePageResult(data);
+        this.stopLoading();
+      },
+      error: err => {
+        this.stopLoading();
+        console.log(err.message);
+      }
+    })
+  }
+
 
   onNovaFaktura(): void {
     this.router.navigate(['/admin/fakture/add']);

@@ -16,6 +16,7 @@ public interface IAppDbContext
     DbSet<OrderItemEntity> OrderItems { get; }
 
     DbSet<FakturaEntity> Fakture { get; }
+    DbSet<FakturaStavkaEntity> FaktureStavke { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct);
 }

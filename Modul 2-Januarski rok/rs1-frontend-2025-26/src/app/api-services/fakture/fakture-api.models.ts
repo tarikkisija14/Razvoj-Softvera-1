@@ -1,4 +1,5 @@
 import { PageResult } from '../../core/models/paging/page-result';
+import {BasePagedQuery} from '../../core/models/paging/base-paged-query';
 
 // === ENUMS ===
 
@@ -31,3 +32,30 @@ export interface ListFaktureQueryDto {
  * Paged response for GET /Fakture
  */
 export type ListFaktureResponse = PageResult<ListFaktureQueryDto>;
+
+
+export class ListFaktureRequest extends BasePagedQuery{
+  constructor() {
+    super();
+  }
+}
+
+export interface CreateFakturaStavkaDto {
+  productCategoryId: number;
+  imeProizvoda: string;
+  kolicina: number;
+}
+
+export interface CreateFakturaCommand{
+  brojRacuna: string;
+  tip: FakturaTip;
+  napomena?: string;
+  stavke:CreateFakturaStavkaDto[]
+}
+
+export interface CreateFakturaResponse {
+  id: number;
+  message: string;
+}
+
+
