@@ -1,0 +1,406 @@
+Promjeniti connection string na localhost
+"Server=localhost;Database=_broj_indeksa;Trusted_Connection=True;MultipleActiveResultSets=true;TrustServerCertificate=True"
+
+
+1.Kreiranje FakturaStavka
+
+
+namespace Market.Domain.Entities.Fakture
+{
+    public class FakturaStavkaEntity:BaseEntity
+    {
+        public int FakturaId {  get; set; }
+        public FakturaEntity? Faktura { get; set; }
+        public int ProductCategoryId {  get; set; }
+        public ProductCategoryEntity? ProductCategory { get; set; }
+
+        public string ImeProizvoda {  get; set; }
+        public int Kolicina {  get; set; }
+
+        public static class Constraints
+        {
+            public const int ImeProizvodaMaxLenght = 150;
+        }
+
+
+    }
+}
+
+2.Editovanje Faktura i dodavanje ICllection(Faktura.cs)
+ public ICollection<FakturaStavkaEntity> Stavke { get; set; } = new List<FakturaStavkaEntity>();
+ public int BrojStavki => Stavke?.Count ?? 0;
+
+
+
+3.EF Kkonfiguracija
+u db context dodat
+ public DbSet<FakturaStavkaEntity> FakturaStavke => Set<FakturaStavkaEntity>();
+
+
+
+4.U iAppDbContext
+DbSet<FakturaStavkaEntity> FaktureStavke { get; }
+
+MIGRACIJE!!!!!!!!!!
+
+
+5:Dto za dodavanje stavki u fakture, dodavannje i handler
+
+namespace Market.Application.Modules.Fakture.Commands
+{
+    public class CreateFakturaStavkaDto
+    {
+        public int ProductCategoryId {  get; set; }
+        public string ImeProizovda {  get; set; }
+        public int Kolicina {  get; set; }
+    }
+}
+
+ public class CreateFakturaCommand:IRequest<int>
+ {
+     public string BrojRacuna {  get; set; }
+     public FakturaTip Tip { get; set; }
+     public string? Napomena {  get; set; }
+     public List<CreateFakturaStavkaDto> Stavke {  get; set; }=new();
+ }
+ 
+   public class CreateFakturaHandler(IAppDbContext db):IRequestHandler<CreateFakturaCommand,int>
+ {
+     public async Task<int>Handle(CreateFakturaCommand command,CancellationToken ct)
+     {
+         if (command.Tip == Domain.Entities.Fakture.FakturaTip.Ulazna)
+         {
+             await HandleUlazna(command, ct);
+         }
+         else if(command.Tip == Domain.Entities.Fakture.FakturaTip.Izlazna)
+         {
+             await HandleIzlazna(command, ct);
+         }
+
+
+         var post = await db.Fakture.FirstOrDefaultAsync(x => x.BrojRacuna == command.BrojRacuna);
+         if (post != null)
+         {
+             throw new Exception("vec postoji");
+
+
+         }
+
+         var novi = new FakturaEntity
+         {
+             BrojRacuna = command.BrojRacuna,
+             Tip = command.Tip,
+             Napomena = command.Napomena,
+             BrojStavki = command.Stavke.Count,
+             Stavke = command.Stavke.Select(x => new FakturaStavkaEntity
+             {
+                 ProductCategoryId = x.ProductCategoryId,
+                 Kolicina = x.Kolicina,
+                 ImeProizvoda = x.ImeProizvoda,
+             }).ToList()
+         };
+         db.Fakture.Add(novi);
+         await db.SaveChangesAsync(ct);
+         return novi.Id;
+
+     }
+
+     private async Task HandleUlazna(CreateFakturaCommand command, CancellationToken ct)
+     {
+        foreach(var stavka in command.Stavke)
+         {
+             var postojeci=await db.Products.FirstOrDefaultAsync(X=>X.Name.ToLower()==stavka.ImeProizvoda.ToLower() &&
+             X.CategoryId==stavka.ProductCategoryId);
+
+             if(postojeci!=null)
+             {
+                 postojeci.StockQuantity += stavka.Kolicina;
+
+             }
+             else
+             {
+                 var novi = new ProductEntity
+                 {
+                     CategoryId = stavka.ProductCategoryId,
+                     Name = stavka.ImeProizvoda,
+                     StockQuantity = stavka.Kolicina,
+                     Description = "kreirano piutem fakture",
+                     Price=0,
+                     IsEnabled=false
+                 };
+                 db.Products.Add(novi);
+             }
+             await db.SaveChangesAsync(ct);
+         }
+     }
+
+     private async Task HandleIzlazna(CreateFakturaCommand command, CancellationToken ct)
+     {
+        var errors=new List<string>();
+         foreach (var stavka in command.Stavke)
+         {
+             var postojeci = await db.Products.FirstOrDefaultAsync(X => X.Name.ToLower() == stavka.ImeProizvoda.ToLower() &&
+             X.CategoryId == stavka.ProductCategoryId);
+
+             if (postojeci==null)
+             {
+                 errors.Add("ne postoji produkt");
+                 continue;
+             }
+             if (postojeci.StockQuantity < stavka.Kolicina)
+             {
+                 errors.Add("nema na stanju dovoljno");
+                 continue;
+             }
+
+         }
+         if (errors.Any())
+         {
+             throw new Exception("faktura odbijena");
+         }
+         foreach (var stavka in command.Stavke)
+         {
+             var postojeci = await db.Products.FirstOrDefaultAsync(X => X.Name.ToLower() == stavka.ImeProizvoda.ToLower() &&
+             X.CategoryId == stavka.ProductCategoryId);
+             postojeci!.StockQuantity -=stavka.Kolicina;
+
+             if (postojeci.StockQuantity == 0)
+             {
+                 postojeci.IsEnabled = false;
+             }
+
+         }
+
+     }
+	 
+	 
+ }
+ using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Market.Application.Modules.Fakture.Commands
+{
+    public class CreateFAkturaValidator:AbstractValidator<CreateFakturaCommand>
+    {
+        public CreateFAkturaValidator() {
+            RuleFor(x => x.BrojRacuna).NotEmpty().MaximumLength(50).WithMessage("valida");
+            RuleFor(x => x.Tip).IsInEnum().WithMessage("valida");
+            
+            RuleFor(x => x.Stavke).NotEmpty().WithMessage("bar 1 stavka");
+
+
+            RuleForEach(x => x.Stavke).ChildRules(s =>
+            {
+                s.RuleFor(x => x.ProductCategoryId).GreaterThan(0).WithMessage("id");
+                s.RuleFor(x => x.Kolicina).GreaterThan(0).WithMessage("kolicina veca 0");
+                s.RuleFor(x => x.ImeProizvoda).MaximumLength(150).WithMessage("ime");
+            });
+
+        }
+    }
+}
+
+ 
+ 6.Controller 
+ [HttpPost]
+    public async Task<IActionResult> Create([FromBody] CreateFakturaCommand command, CancellationToken ct)
+    {
+        var fakturaId = await sender.Send(command, ct);
+        return Ok(new { id = fakturaId, message = "Faktura uspješno kreirana." });
+    }
+ 
+ 
+ 7.dodamo u modele
+ 
+ export class ListFaktureRequest extends BasePagedQuery{
+  constructor() {
+    super();
+  }
+}
+ 
+ 
+ export interface CreateFakturaStavkaDto {
+  productCategoryId: number;
+  imeProizvoda: string;
+  kolicina: number;
+}
+
+export interface CreateFakturaCommand{
+  brojRacuna: string;
+  tip: FakturaTip;
+  napomena?: string;
+  stavke:CreateFakturaStavkaDto[]
+}
+export interface CreateFakturaResponse {
+  id: number;
+  message: string;
+}
+
+
+7.dodajemo u api servis create i mjenjamo list
+
+list(request:ListFaktureRequest): Observable<ListFaktureResponse> {
+   const params=buildHttpParams(request);
+
+    return this.http.get<ListFaktureResponse>(this.baseUrl, { params });
+  }
+
+  create(command:CreateFakturaCommand):Observable<CreateFakturaResponse>{
+    return this.http.post<CreateFakturaResponse>(this.baseUrl, command);
+  }
+ 
+ 8.paginator u html
+ <app-fit-paginator-bar [vm]="this"></app-fit-paginator-bar>
+ 
+ RADIMO NA FAKTURE.TS
+ 
+ 9.Dodamo nasljedjivanje u FakturaComponent 
+ export class FaktureComponent 
+  extends BaseListPagedComponent<ListFaktureQueryDto, ListFaktureRequest>
+  implements OnInit
+  
+  10.Dodamo constructor
+    constructor() {
+    super();
+    this.request = new ListFaktureRequest();
+  }
+  
+  11.init list mjesto hardkodiranog loaddata
+  ngOnInit(): void {
+    this.initList();
+  }
+ 
+ 12.Dodamo loadPagedData
+   loadPagedData(): void {
+    this.startLoading();
+
+    this.faktureApiService.list(this.request).subscribe({
+      next: params => {
+        this.handlePageResult(params);
+        this.stopLoading();
+      },
+      error: err => {
+        this.stopLoading();
+        console.error(err);
+      }
+    })
+  }
+  
+  13.Mjenjamo fakture u items u htmlu i obrisi niz faktura iz tsa
+    <div class="table-card">
+    <table mat-table [dataSource]="items">
+      <!-- Broj računa -->
+      <ng-container matColumnDef="brojRacuna">
+        <th mat-header-cell *matHeaderCellDef>BROJ RAČUNA</th>
+        <td mat-cell *matCellDef="let faktura">
+          <span class="broj-racuna">{{ faktura.brojRacuna }}</span>
+        </td>
+      </ng-container>
+	  
+SADA PRELAZ NA ADD KOMPONENTU(GLAVNI DIO ZADATKA)
+
+Dodajemo api servise 
+private fApi=inject(FaktureApiService);
+private prApi=inject(ProductCategoriesApiService);
+private ts=inject(ToasterService);
+
+
+promjeniti kategorije da ne budu hardkodirane
+ kategorije: Kategorija[]=[]
+ 
+Izmjenimo konstruktor dodamo validatore i sklonimo add item 
+ constructor() {
+    this.form = this.fb.group({
+      brojRacuna: ['',[Validators.required,Validators.maxLength(20)]],
+      tip: ['',[Validators.required]],
+      napomena: ['',[Validators.required,Validators.maxLength(150)]],
+      items: this.fb.array([],[Validators.required])
+    });
+
+  
+  }
+  
+  
+Moramo dinamicki ucitati kategorije 
+  ngOnInit() {
+    this.loadLKategorije();
+  }
+
+loadLKategorije() {
+    this.isLoading=true;
+    this.prApi.list().subscribe({
+      next: data => {
+        this.kategorije=data.items.map(k=>({
+          id:k.id,
+          name: k.name,
+        }));
+        this.isLoading=false;
+        this.addItem();
+        this.addItem();
+      },
+      error: err => {
+        console.log(err);
+        this.ts.error("greska pri ucitavanju kategorija");
+      }
+    })
+  }
+  
+Editujemo additem da ima validatore
+ addItem(): void {
+    const itemGroup = this.fb.group({
+      kategorijaId: ['',[Validators.required]],
+      proizvod: ['',[Validators.required,Validators.maxLength(150)]],
+      kolicina: [1,[Validators.required,Validators.min(1)]],
+    });
+    this.items.push(itemGroup);
+  }
+  
+
+
+Implementacija onSubmit(GLAVNI DIO ISPITA!!!!!)
+onSubmit(): void {
+    if(this.form.invalid){
+      this.ts.error("popuntie sva polja");
+      return;
+    }
+
+    if(this.items.length === 0){
+      this.ts.error("faktura mora imati 1 stavku");
+      return;
+    }
+    this.isSaving = true;
+
+    const command:CreateFakturaCommand={
+      brojRacuna:this.form.value.brojRacuna,
+      tip:this.form.value.tip,
+      napomena:this.form.value.napomena,
+      stavke:this.items.controls.map(i=>({
+        kategorijaId:i.value.kategorijaId,
+        imeProizvoda:i.value.proizvod,
+        kolicina:i.value.kolicina,
+
+      }as CreateFakturaStavkaDto
+      ))
+    };
+
+    this.fApi.create(command).subscribe({
+      next: data => {
+        this.ts.success(("faktura uspjesno kreirana"));
+        this.router.navigate(['/admin/fakture']);
+      },
+      error: err => {
+        this.ts.error("ERRROR");
+        this.ts.error(err.message);
+        this.isSaving = false;
+		if(err.status==409){
+		   this.toaster.error("kreiranje fakture odbijeno");
+		}
+		
+
+      }
+    })
+
+  }
